@@ -1,0 +1,97 @@
+# Modèle de job Grammage : audite l'aperçu d'une demande de fusion, GRAMMAGE_URL, le site lancé par GRAMMAGE_SERVE ou celui d'un service sur GRAMMAGE_SERVE_URL
+.grammage:
+  stage: test
+  image:
+    name: $GRAMMAGE_REGISTRY/solyzon/products/grammage/grammage:$GRAMMAGE_VERSION
+    entrypoint: ['']
+    pull_policy: always
+  variables:
+    GRAMMAGE_REGISTRY: registry.solyzon.net
+    GRAMMAGE_VERSION: latest
+    GRAMMAGE_DEVICE: mobile
+    GRAMMAGE_MODE: normal
+    GRAMMAGE_PARALLEL: '3'
+    GRAMMAGE_CATEGORY: showcase
+    GRAMMAGE_MAX_PAGES: '50'
+    GRAMMAGE_SERVE_TIMEOUT: '300'
+    GRAMMAGE_PNPM_STORE: /cache/pnpm-store-node
+  before_script:
+    - |
+      if [ -n "$GRAMMAGE_SERVE" ] || [ -n "$GRAMMAGE_SERVE_URL" ]; then
+        GRAMMAGE_SERVE_URL="${GRAMMAGE_SERVE_URL:-http://127.0.0.1:4321}"
+        wait_for() { node -e 'const [url, seconds] = process.argv.slice(1); const end = Date.now() + Number(seconds) * 1000; const wait = async () => { while (Date.now() < end) { try { if ((await fetch(url)).status < 500) return; } catch {} await new Promise((done) => setTimeout(done, 1000)); } console.error(`grammage : ${url} ne répond pas après ${seconds} s`); process.exit(1); }; wait();' "$1" "$2"; }
+        if [ -n "$GRAMMAGE_SERVE" ]; then
+          [ -w "$GRAMMAGE_PNPM_STORE" ] && pnpm config set store-dir "$GRAMMAGE_PNPM_STORE"
+          sh -c "$GRAMMAGE_SERVE" > /tmp/grammage-serve.log 2>&1 &
+        fi
+        wait_for "$GRAMMAGE_SERVE_URL" "$GRAMMAGE_SERVE_TIMEOUT" || { [ -f /tmp/grammage-serve.log ] && cat /tmp/grammage-serve.log; exit 1; }
+        grammage proxy "$GRAMMAGE_SERVE_URL" --port 8080 &
+        wait_for http://127.0.0.1:8080/ 30
+        export GRAMMAGE_URL=http://127.0.0.1:8080/
+      fi
+  script:
+    - |
+      [ -z "$GRAMMAGE_URL" ] && [ -z "$GRAMMAGE_HTTP_AUTH" ] && [ -n "$PREVIEW_PASSWORD" ] && export GRAMMAGE_HTTP_AUTH="$PREVIEW_USER:$PREVIEW_PASSWORD"
+      set -- audit "${GRAMMAGE_URL:-$PREVIEW_URL}"
+      [ -n "$GRAMMAGE_SITE" ] && set -- audit --site "${GRAMMAGE_URL:-$PREVIEW_URL}" --max-pages "$GRAMMAGE_MAX_PAGES"
+      set -- "$@" --device "$GRAMMAGE_DEVICE" --mode "$GRAMMAGE_MODE" --parallel "$GRAMMAGE_PARALLEL" --category "$GRAMMAGE_CATEGORY" --format json,html,gitlab,agent,rgesn,pdf --out grammage
+      [ -n "$GRAMMAGE_RUNS" ] && set -- "$@" --runs "$GRAMMAGE_RUNS"
+      [ -n "$GRAMMAGE_URLS_FILE" ] && set -- "$@" --urls "$GRAMMAGE_URLS_FILE"
+      [ -n "$GRAMMAGE_BUDGET" ] && set -- "$@" --budget "$GRAMMAGE_BUDGET"
+      [ -n "$GRAMMAGE_FAIL_UNDER" ] && set -- "$@" --fail-under "$GRAMMAGE_FAIL_UNDER"
+      [ -n "$GRAMMAGE_STORAGE_STATE" ] && set -- "$@" --storage-state "$GRAMMAGE_STORAGE_STATE"
+      [ -n "$GRAMMAGE_COOKIES" ] && set -- "$@" --cookies "$GRAMMAGE_COOKIES"
+      [ -n "$CI_PROJECT_DIR" ] && set -- "$@" --source "$CI_PROJECT_DIR"
+      grammage "$@"
+  artifacts:
+    when: always
+    expose_as: Grammage
+    paths:
+      - grammage/
+    reports:
+      junit: grammage/grammage-junit.xml
+      codequality: grammage/gl-code-quality-report.json
+      metrics: grammage/metrics.txt
+  allow_failure:
+    exit_codes: [1]
+
+# Certifie la production : mesure GRAMMAGE_URL, refuse sous les seuils posés, signe le rapport et l'enregistre auprès de l'API
+.grammage-certify:
+  extends: .grammage
+  stage: deploy
+  before_script: []
+  script:
+    - |
+      set -- certify "$GRAMMAGE_URL"
+      [ -n "$GRAMMAGE_SITE" ] && set -- certify --site "$GRAMMAGE_URL" --max-pages "$GRAMMAGE_MAX_PAGES"
+      set -- "$@" --device "$GRAMMAGE_DEVICE" --mode "$GRAMMAGE_MODE" --parallel "$GRAMMAGE_PARALLEL" --category "$GRAMMAGE_CATEGORY" --format json,html,gitlab --out grammage
+      [ -n "$GRAMMAGE_RUNS" ] && set -- "$@" --runs "$GRAMMAGE_RUNS"
+      [ -n "$GRAMMAGE_BUDGET" ] && set -- "$@" --budget "$GRAMMAGE_BUDGET"
+      [ -n "$GRAMMAGE_FAIL_UNDER" ] && set -- "$@" --fail-under "$GRAMMAGE_FAIL_UNDER"
+      grammage "$@"
+  artifacts:
+    when: always
+    expose_as: Grammage certification
+    paths:
+      - grammage/
+  allow_failure: false
+
+# Audite le code source du dépôt, sans navigateur ni aperçu
+.grammage-source:
+  stage: test
+  image:
+    name: $GRAMMAGE_REGISTRY/solyzon/products/grammage/grammage:$GRAMMAGE_VERSION
+    entrypoint: ['']
+    pull_policy: always
+  variables:
+    GRAMMAGE_REGISTRY: registry.solyzon.net
+    GRAMMAGE_VERSION: latest
+  script:
+    - grammage source "$CI_PROJECT_DIR" --format gitlab --out grammage
+  artifacts:
+    when: always
+    expose_as: Grammage source
+    paths:
+      - grammage/grammage-source.json
+    reports:
+      codequality: grammage/gl-code-quality-source.json
