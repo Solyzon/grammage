@@ -1,0 +1,44 @@
+# Extrait à copier dans bitbucket-pipelines.yml : audite le site et publie le rapport Code Insights de la pull request
+definitions:
+  steps:
+    - step: &grammage
+        name: Grammage
+        image:
+          name: registry.solyzon.net/solyzon/products/grammage/grammage:latest
+          username: $GRAMMAGE_REGISTRY_USERNAME
+          password: $GRAMMAGE_LICENSE
+        script:
+          - |
+            export GRAMMAGE_PLATFORM=bitbucket GRAMMAGE_COMMAND=audit GRAMMAGE_OUT=test-results GRAMMAGE_REPOSITORY="$BITBUCKET_CLONE_DIR"
+            set +e
+            grammage-ci
+            code=$?
+            set -e
+            node -e '
+              const fs = require("node:fs");
+              const http = require("node:http");
+              const base = "http://api.bitbucket.org/2.0/repositories/" + process.env.BITBUCKET_REPO_FULL_NAME + "/commit/" + process.env.BITBUCKET_COMMIT + "/reports/grammage";
+              const send = (url, method, body) => new Promise((done, fail) => {
+                const request = http.request({ host: "localhost", port: 29418, path: url, method, headers: { host: "api.bitbucket.org", "content-type": "application/json" } }, (answer) => {
+                  let text = "";
+                  answer.on("data", (chunk) => (text += chunk));
+                  answer.on("end", () => (answer.statusCode < 300 ? done() : fail(new Error(method + " " + url + ": " + answer.statusCode + " " + text))));
+                });
+                request.on("error", fail);
+                request.end(body);
+              });
+              (async () => {
+                await send(base, "PUT", fs.readFileSync("test-results/bitbucket-insights-report.json", "utf8"));
+                const all = JSON.parse(fs.readFileSync("test-results/bitbucket-insights-annotations.json", "utf8"));
+                for (let index = 0; index < all.length; index += 100) {
+                  await send(base + "/annotations", "POST", JSON.stringify(all.slice(index, index + 100)));
+                }
+              })().catch((error) => { console.error(error.message); process.exit(1); });'
+            [ "$code" -eq 1 ] || exit "$code"
+        artifacts:
+          - test-results/**
+
+pipelines:
+  pull-requests:
+    '**':
+      - step: *grammage

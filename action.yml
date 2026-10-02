@@ -1,0 +1,119 @@
+name: Grammage
+description: Weigh the carbon footprint of a website on each pull request and certify it in production
+inputs:
+  command:
+    description: audit, source or certify
+    default: audit
+  url:
+    description: the page to audit, or the start of the crawl with site
+    default: ''
+  site:
+    description: any value audits the whole site
+    default: ''
+  serve-url:
+    description: where a site started by an earlier step answers, put behind a compressing proxy
+    default: ''
+  serve-timeout:
+    description: seconds left to the started site to answer
+    default: '300'
+  urls-file:
+    description: a repository file that lists more pages, one per line
+    default: ''
+  max-pages:
+    description: pages at most with site
+    default: '50'
+  device:
+    description: mobile or desktop
+    default: mobile
+  mode:
+    description: fast, normal or full
+    default: normal
+  runs:
+    description: runs per page, instead of the mode
+    default: ''
+  parallel:
+    description: pages measured at the same time, from 1 to 8
+    default: '3'
+  category:
+    description: the grading category, or auto
+    default: showcase
+  budget:
+    description: a budget.json file of the repository
+    default: ''
+  fail-under:
+    description: the lowest grade, from A to F, or the lowest score
+    default: ''
+  http-auth:
+    description: user:password of a password protected preview
+    default: ''
+  license:
+    description: the Grammage license token
+    required: true
+  registry-username:
+    description: the username of the Grammage registry
+    required: true
+  registry:
+    description: the registry of the image
+    default: registry.solyzon.net
+  version:
+    description: the image tag
+    default: latest
+  comment:
+    description: post the summary on the pull request, updated on each run
+    default: 'true'
+  sarif:
+    description: upload the findings to code scanning
+    default: 'false'
+  github-token:
+    description: the token that posts the comment
+    default: ${{ github.token }}
+outputs:
+  exit-code:
+    description: 0, 1 for a missed threshold, 2 for a page that could not be measured, 3 for a repository without a site
+    value: ${{ steps.run.outputs.exit-code }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/github/run.sh"'
+      env:
+        GRAMMAGE_COMMAND: ${{ inputs.command }}
+        GRAMMAGE_URL: ${{ inputs.url }}
+        GRAMMAGE_SITE: ${{ inputs.site }}
+        GRAMMAGE_SERVE_URL: ${{ inputs.serve-url }}
+        GRAMMAGE_SERVE_TIMEOUT: ${{ inputs.serve-timeout }}
+        GRAMMAGE_URLS_FILE: ${{ inputs.urls-file }}
+        GRAMMAGE_MAX_PAGES: ${{ inputs.max-pages }}
+        GRAMMAGE_DEVICE: ${{ inputs.device }}
+        GRAMMAGE_MODE: ${{ inputs.mode }}
+        GRAMMAGE_RUNS: ${{ inputs.runs }}
+        GRAMMAGE_PARALLEL: ${{ inputs.parallel }}
+        GRAMMAGE_CATEGORY: ${{ inputs.category }}
+        GRAMMAGE_BUDGET: ${{ inputs.budget }}
+        GRAMMAGE_FAIL_UNDER: ${{ inputs.fail-under }}
+        GRAMMAGE_HTTP_AUTH: ${{ inputs.http-auth }}
+        GRAMMAGE_LICENSE: ${{ inputs.license }}
+        GRAMMAGE_REGISTRY_USERNAME: ${{ inputs.registry-username }}
+        GRAMMAGE_REGISTRY: ${{ inputs.registry }}
+        GRAMMAGE_VERSION: ${{ inputs.version }}
+    - if: always() && steps.run.outputs.ran == 'true'
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/github/report.sh"'
+      env:
+        GRAMMAGE_COMMAND: ${{ inputs.command }}
+        GRAMMAGE_COMMENT: ${{ inputs.comment }}
+        GRAMMAGE_PR: ${{ github.event.pull_request.number }}
+        GH_TOKEN: ${{ inputs.github-token }}
+    - if: always() && steps.run.outputs.ran == 'true' && inputs.sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: grammage/${{ inputs.command == 'source' && 'grammage-source.sarif' || 'grammage.sarif' }}
+        category: grammage-${{ inputs.command }}
+    - if: always() && steps.run.outputs.ran == 'true'
+      uses: actions/upload-artifact@v7
+      with:
+        name: grammage-${{ inputs.command }}
+        path: grammage/
+    - shell: bash
+      run: exit "${{ steps.run.outputs.exit-code }}"

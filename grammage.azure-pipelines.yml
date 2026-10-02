@@ -1,0 +1,46 @@
+# Extrait à copier dans azure-pipelines.yml : audite le site et publie les tests, le résumé et le SARIF du build
+jobs:
+  - job: grammage
+    pool:
+      vmImage: ubuntu-latest
+    variables:
+      GRAMMAGE_REGISTRY: registry.solyzon.net
+      GRAMMAGE_VERSION: latest
+    steps:
+      - checkout: self
+      - bash: |
+          image="$GRAMMAGE_REGISTRY/solyzon/products/grammage/grammage:$GRAMMAGE_VERSION"
+          printf '%s' "$GRAMMAGE_LICENSE" | docker login "$GRAMMAGE_REGISTRY" --username "$GRAMMAGE_REGISTRY_USERNAME" --password-stdin
+          set +e
+          docker run --rm --network host --user "$(id -u):$(id -g)" \
+            --volume "$BUILD_SOURCESDIRECTORY:/repo" --workdir /repo --env HOME=/tmp \
+            --env GRAMMAGE_PLATFORM=azure --env GRAMMAGE_COMMAND=audit --env GRAMMAGE_URL \
+            --env GRAMMAGE_SITE --env GRAMMAGE_SERVE_URL --env GRAMMAGE_FAIL_UNDER \
+            --env GRAMMAGE_BUDGET --env GRAMMAGE_CATEGORY --env GRAMMAGE_HTTP_AUTH \
+            --env GRAMMAGE_LICENSE --entrypoint grammage-ci "$image"
+          echo "##vso[task.setvariable variable=grammageExitCode]$?"
+        displayName: Grammage
+        env:
+          GRAMMAGE_LICENSE: $(GRAMMAGE_LICENSE)
+          GRAMMAGE_REGISTRY_USERNAME: $(GRAMMAGE_REGISTRY_USERNAME)
+          GRAMMAGE_HTTP_AUTH: $(GRAMMAGE_HTTP_AUTH)
+      - task: PublishTestResults@2
+        condition: succeededOrFailed()
+        inputs:
+          testResultsFormat: JUnit
+          testResultsFiles: grammage/grammage-junit.xml
+          testRunTitle: Grammage
+      - bash: echo "##vso[task.uploadsummary]$BUILD_SOURCESDIRECTORY/grammage/grammage-summary.md"
+        condition: succeededOrFailed()
+        displayName: Grammage summary
+      - bash: mkdir -p "$BUILD_ARTIFACTSTAGINGDIRECTORY/CodeAnalysisLogs" && cp grammage/grammage.sarif "$BUILD_ARTIFACTSTAGINGDIRECTORY/CodeAnalysisLogs/"
+        condition: succeededOrFailed()
+        displayName: Grammage SARIF
+      - publish: $(Build.ArtifactStagingDirectory)/CodeAnalysisLogs
+        artifact: CodeAnalysisLogs
+        condition: succeededOrFailed()
+      - publish: grammage
+        artifact: grammage
+        condition: succeededOrFailed()
+      - bash: '[ "$(grammageExitCode)" -eq 1 ] || exit "$(grammageExitCode)"'
+        displayName: Grammage verdict
